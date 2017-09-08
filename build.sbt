@@ -1,5 +1,5 @@
 name := "vscode-scala"
-
+resolvers += Resolver.bintrayRepo("jvican", "releases")
 
 scalaVersion in ThisBuild := "2.12.3"
 
