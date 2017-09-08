@@ -3,7 +3,7 @@
 # Language server + profiledb for Scala
 
 **This is a fork of vscode-scala to illustrate how to display profiling information
-in an IDE-like editor using the profiledb in [scalac-profiling]()**.
+in an IDE-like editor using the profiledb in [scalac-profiling]**.
 
 ![demo](code.gif "Demo")
 
