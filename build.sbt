@@ -1,5 +1,4 @@
 name := "vscode-scala"
-resolvers += Resolver.bintrayRepo("jvican", "releases")
 
 scalaVersion in ThisBuild := "2.12.3"
 
@@ -11,6 +10,7 @@ lazy val commonSettings = Seq(
   organization := "com.github.dragos",
   version := "0.1.4-scalacenter-SNAPSHOT",
   resolvers += "dhpcs at bintray" at "https://dl.bintray.com/dhpcs/maven",
+  resolvers += Resolver.bintrayRepo("jvican", "releases"),
   libraryDependencies ++= Seq(
     "org.scalatest" %% "scalatest" % "3.0.4" % "test"
   ),
