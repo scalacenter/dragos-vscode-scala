@@ -1,7 +1,7 @@
 name := "vscode-scala"
 
 
-scalaVersion in ThisBuild := "2.11.11"
+scalaVersion in ThisBuild := "2.12.3"
 
 publishMavenStyle := true
 publishArtifact in Test := false
@@ -12,7 +12,7 @@ lazy val commonSettings = Seq(
   version := "0.1.4-SNAPSHOT",
   resolvers += "dhpcs at bintray" at "https://dl.bintray.com/dhpcs/maven",
   libraryDependencies ++= Seq(
-    "org.scalatest" %% "scalatest" % "2.2.6" % "test"
+    "org.scalatest" %% "scalatest" % "3.0.4" % "test"
   ),
   publishTo := {
     val nexus = "https://oss.sonatype.org/"
@@ -27,8 +27,8 @@ lazy val languageserver = project.
   settings(commonSettings).
   settings(
     libraryDependencies ++= Seq(
-      "com.dhpcs" %% "play-json-rpc" % "1.3.0",
-      "com.typesafe.scala-logging" %% "scala-logging" % "3.4.0",
+      "me.vican.jorge" %% "play-json-rpc" % "1.5.0",
+      "com.typesafe.scala-logging" %% "scala-logging" % "3.7.2",
       "org.slf4j" % "slf4j-api" % "1.7.21",
       "ch.qos.logback" %  "logback-classic" % "1.1.7",
       "org.codehaus.groovy" % "groovy" % "2.4.0"
