@@ -1,6 +1,9 @@
 [![Build Status](https://travis-ci.org/dragos/dragos-vscode-scala.svg?branch=master)](https://travis-ci.org/dragos/dragos-vscode-scala)
 
-# Scala language server for VS Code
+# Language server + profiledb for Scala
+
+**This is a fork of vscode-scala to illustrate how to display profiling information
+in an IDE-like editor using the profiledb in [scalac-profiling]()**.
 
 ![demo](code.gif "Demo")
 
@@ -76,3 +79,5 @@ This setting is translated as Coursier's vm arguments: -Dhttp.proxyHost=host -Dh
 ```
 
 Then `cd scala/` and run `vsce publish`
+
+[scalac-profiling]: https://github.com/scalacenter/scalac-profiling
