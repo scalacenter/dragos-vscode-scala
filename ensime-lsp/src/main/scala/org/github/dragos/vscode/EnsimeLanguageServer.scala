@@ -6,6 +6,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.URI
 import java.nio.file.{Path, Paths}
+import java.util.concurrent.ConcurrentHashMap
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
@@ -136,11 +137,15 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream, cwd: Path) extend
     }.getOrElse(sys.error("Fatal error: ensime configuration is missing."))
   }
 
+  import com.google.protobuf.timestamp.Timestamp
+  // import com.google.protobuf.duration.Duration
   import ch.epfl.scala.profiledb.{ProfileDb, ProfileDbPath}
   import ch.epfl.scala.profiledb.utils.{AbsolutePath, RelativePath}
+  import ch.epfl.scala.profiledb.{profiledb => schema}
   final val workingDirectory = AbsolutePath(cwd)
 
-  def loadProfileDbFor(sourceFile: Path): Unit = {
+  def loadProfileDbNotesFor(sourceFile: Path): List[Note] = {
+    // FIXME(jvican): All this mess is horrendous. Fix soon.
     logger.info(s"Requesting profiledb for $sourceFile")
     logger.info(s"The relative target is ${sourceFile.relativize(cwd).toAbsolutePath}")
     val (sourceDir, targetDirectories) = findTargetDirectories(sourceFile)
@@ -149,14 +154,41 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream, cwd: Path) extend
     logger.info(s"Relative source path is $relativeSourcePath")
     val relativeTargetPath = ProfileDbPath.toProfileDbPath(relativeSourcePath)
     logger.info(s"Relative target path is $relativeTargetPath")
-    targetDirectories.map(AbsolutePath.apply).map { targetDir =>
+    targetDirectories.map(AbsolutePath.apply).flatMap { targetDir =>
       val dbPath = ProfileDbPath(targetDir, relativeTargetPath)
       logger.info(s"Profiledb path is ${dbPath.target}")
       val readDatabase = ProfileDb.read(dbPath)
       logger.info(s"Read database is $readDatabase")
-      readDatabase
+      implicit val timestampOrdering: Ordering[Timestamp] = Ordering.by(t => t.seconds -> t.nanos)
+      readDatabase.map { db =>
+        val latestEntry =
+          if (db.`type`.isGlobal) sys.error("Database was global.")
+          else db.entries.maxBy(e => e.timestamp.getOrElse(Timestamp.defaultInstance))
+        val unitProfile = latestEntry.compilationUnitProfile.get
+        val implicitNotes = unitProfile.implicitSearchProfiles.toList.map { profile =>
+          val msg = s"Triggered ${profile.searches} implicit searches"
+          val pos = profile.position.get
+          val beg, end = pos.point
+          Note(sourceFile.toFile.getAbsolutePath, msg, NoteWarn, beg, end, pos.line, pos.column)
+        }
+        val macroNotes = unitProfile.macroProfiles.toList.map { profile =>
+          val msg = s"Expanded ${profile.expandedMacros} macros of ${profile.approximateSize} nodes during ${profile.duration.get}"
+          val pos = profile.position.get
+          val beg, end = pos.point
+          Note(sourceFile.toFile.getAbsolutePath, msg, NoteWarn, beg, end, pos.line, pos.column)
+        }
+        val notes = implicitNotes ++ macroNotes
+        logger.info(s"Read the following notes: $notes")
+        notes
+      }.getOrElse {
+        logger.info(s"An error occurred $readDatabase")
+        Nil
+      }
     }
   }
+
+  import scala.collection.mutable.HashSet
+  final val pendingDbNotesFor = HashSet[Path]()
 
   override def onOpenTextDocument(td: TextDocumentItem): Unit = {
     if (ensimeActor eq null) return
@@ -170,7 +202,7 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream, cwd: Path) extend
       logger.debug(s"Not adding temporary file $f to Ensime")
     } else {
       val filepath = f.toPath
-      loadProfileDbFor(filepath)
+      pendingDbNotesFor += filepath
       ensimeActor ! TypecheckFileReq(SourceFileInfo(RawFile(filepath), Some(td.text)))
     }
   }
@@ -189,7 +221,7 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream, cwd: Path) extend
 
     val filepath = getPathFrom(td)
     val sourceFileInfo = toSourceFileInfo(filepath, Some(change.text))
-    loadProfileDbFor(filepath)
+    pendingDbNotesFor += filepath
     ensimeActor ! TypecheckFileReq(sourceFileInfo)
   }
 
@@ -204,7 +236,10 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream, cwd: Path) extend
   }
 
   def publishDiagnostics(diagnostics: List[Note]) = {
-    val byFile = diagnostics.groupBy(_.file)
+    val profileDbDiagnostics = pendingDbNotesFor.iterator.flatMap(loadProfileDbNotesFor).toList
+    val allDiagnostics = diagnostics ++ profileDbDiagnostics
+    val byFile = allDiagnostics.groupBy(_.file)
+    pendingDbNotesFor.clear()
 
     logger.info(s"Received ${diagnostics.size} notes.")
 
