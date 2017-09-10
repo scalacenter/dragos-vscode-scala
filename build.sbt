@@ -1,6 +1,5 @@
 name := "vscode-scala"
 
-
 scalaVersion in ThisBuild := "2.11.11"
 
 publishMavenStyle := true
@@ -9,7 +8,7 @@ pomIncludeRepository := { _ => false }
 
 lazy val commonSettings = Seq(
   organization := "com.github.dragos",
-  version := "0.1.4-SNAPSHOT",
+  version := "0.1.4-profiledb-SNAPSHOT",
   resolvers += "dhpcs at bintray" at "https://dl.bintray.com/dhpcs/maven",
   libraryDependencies ++= Seq(
     "org.scalatest" %% "scalatest" % "2.2.6" % "test"

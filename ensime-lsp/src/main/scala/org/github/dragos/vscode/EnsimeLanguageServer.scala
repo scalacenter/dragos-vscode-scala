@@ -1,24 +1,21 @@
 package org.github.dragos.vscode
 
 import language.postfixOps
-
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.URI
-import java.nio.file.Paths
+import java.nio.file.{Path, Paths}
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.io.Source
-
 import org.ensime.api._
 import org.ensime.api.TypecheckFileReq
 import org.ensime.config.EnsimeConfigProtocol
 import org.ensime.core._
 import org.ensime.util.file._
 import org.ensime.util.path._
-
 import akka.actor.ActorRef
 import akka.actor.ActorSystem
 import akka.actor.Props
@@ -36,9 +33,10 @@ import scala.util.Success
 import java.nio.charset.Charset
 import langserver.core.MessageReader
 
-class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageServer(in, out) {
+class EnsimeLanguageServer(in: InputStream, out: OutputStream, cwd: Path) extends LanguageServer(in, out) {
   private val system = ActorSystem("ENSIME")
   private var fileStore: TempFileStore = _
+  private var ensimeConfig: Option[EnsimeConfig] = None
 
   // Ensime root actor
   private var ensimeActor: ActorRef = _
@@ -98,6 +96,7 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
         logger.info(s"Using configuration: $config")
         fileStore = new TempFileStore(config.cacheDir.toString)
         ensimeActor = system.actorOf(Props(classOf[EnsimeActor], this, config), "server")
+        ensimeConfig = Some(config)
 
         // we don't give a damn about them, but Ensime expects it
         ensimeActor ! ConnectionInfoReq
@@ -118,6 +117,47 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
     case _ => ()
   }
 
+  type Found = (Path, List[Path])
+
+  // For God's sake, clean this mess some time when I'm not in a rush.
+  def findTargetDirectories(sourceFile0: Path): Found = {
+    val sourceFile = sourceFile0.toAbsolutePath
+    ensimeConfig.map { c =>
+      val sourcesToProjects = c.projects.flatMap(p => p.sources.map(s => s -> p))
+      val candidateTuple = sourcesToProjects.maxBy {
+        case (sourceDir, project) =>
+          val absoluteSourceDir = sourceDir.toPath.toAbsolutePath
+          if (sourceFile.startsWith(absoluteSourceDir))
+            sourceFile.toString.length - absoluteSourceDir.toString.length
+          else 0
+      }
+      logger.info(s"Candidate tuple is $candidateTuple")
+      candidateTuple._1.toPath -> candidateTuple._2.targets.map(_.toPath).toList
+    }.getOrElse(sys.error("Fatal error: ensime configuration is missing."))
+  }
+
+  import ch.epfl.scala.profiledb.{ProfileDb, ProfileDbPath}
+  import ch.epfl.scala.profiledb.utils.{AbsolutePath, RelativePath}
+  final val workingDirectory = AbsolutePath(cwd)
+
+  def loadProfileDbFor(sourceFile: Path): Unit = {
+    logger.info(s"Requesting profiledb for $sourceFile")
+    logger.info(s"The relative target is ${sourceFile.relativize(cwd).toAbsolutePath}")
+    val (sourceDir, targetDirectories) = findTargetDirectories(sourceFile)
+    logger.info(s"Candidate target directories $targetDirectories")
+    val relativeSourcePath = AbsolutePath(sourceFile).toRelative(workingDirectory)
+    logger.info(s"Relative source path is $relativeSourcePath")
+    val relativeTargetPath = ProfileDbPath.toProfileDbPath(relativeSourcePath)
+    logger.info(s"Relative target path is $relativeTargetPath")
+    targetDirectories.map(AbsolutePath.apply).map { targetDir =>
+      val dbPath = ProfileDbPath(targetDir, relativeTargetPath)
+      logger.info(s"Profiledb path is ${dbPath.target}")
+      val readDatabase = ProfileDb.read(dbPath)
+      logger.info(s"Read database is $readDatabase")
+      readDatabase
+    }
+  }
+
   override def onOpenTextDocument(td: TextDocumentItem): Unit = {
     if (ensimeActor eq null) return
     val uri = new URI(td.uri)
@@ -129,9 +169,16 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
     if (f.getAbsolutePath.startsWith(fileStore.path)) {
       logger.debug(s"Not adding temporary file $f to Ensime")
     } else {
-      ensimeActor ! TypecheckFileReq(SourceFileInfo(RawFile(f.toPath()), Some(td.text)))
+      val filepath = f.toPath
+      loadProfileDbFor(filepath)
+      ensimeActor ! TypecheckFileReq(SourceFileInfo(RawFile(filepath), Some(td.text)))
     }
   }
+
+  def getPathFrom(td: VersionedTextDocumentIdentifier): Path =
+    Paths.get(new URI(td.uri))
+  def getPathFrom(td: TextDocumentIdentifier): Path =
+    Paths.get(new URI(td.uri))
 
   override def onChangeTextDocument(td: VersionedTextDocumentIdentifier, changes: Seq[TextDocumentContentChangeEvent]) = {
     // we assume full text sync
@@ -140,7 +187,10 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
     assert(change.range.isEmpty)
     assert(change.rangeLength.isEmpty)
 
-    ensimeActor ! TypecheckFileReq(toSourceFileInfo(td.uri, Some(change.text)))
+    val filepath = getPathFrom(td)
+    val sourceFileInfo = toSourceFileInfo(filepath, Some(change.text))
+    loadProfileDbFor(filepath)
+    ensimeActor ! TypecheckFileReq(sourceFileInfo)
   }
 
   override def onSaveTextDocument(td: TextDocumentIdentifier) = {
@@ -178,7 +228,7 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
 
     val res = for (doc <- documentManager.documentForUri(textDocument.uri)) yield {
       val future = ensimeActor ? CompletionsReq(
-        toSourceFileInfo(textDocument.uri, Some(new String(doc.contents))),
+        toSourceFileInfo(getPathFrom(textDocument), Some(new String(doc.contents))),
         doc.positionToOffset(position),
         100, caseSens = false, reload = false)
 
@@ -200,7 +250,7 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
 
     val res = for (doc <- documentManager.documentForUri(textDocument.uri)) yield {
       val future = ensimeActor ? SymbolAtPointReq(
-        Right(toSourceFileInfo(textDocument.uri, Some(new String(doc.contents)))),
+        Right(toSourceFileInfo(getPathFrom(textDocument), Some(new String(doc.contents)))),
         doc.positionToOffset(position))
 
       future.onComplete { f => logger.debug(s"Goto Definition future completed: succes? ${f.isSuccess}") }
@@ -253,7 +303,7 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
     // }
     val res = for (doc <- documentManager.documentForUri(textDocument.uri)) yield {
       val future = ensimeActor ? DocUriAtPointReq(
-        Right(toSourceFileInfo(textDocument.uri, Some(new String(doc.contents)))),
+        Right(toSourceFileInfo(getPathFrom(textDocument), Some(new String(doc.contents)))),
         OffsetRange(doc.positionToOffset(position)))
 
       future.onComplete { f => logger.debug(s"DocUriAtPointReq future completed: succes? ${f.isSuccess}") }
@@ -301,7 +351,7 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
         }
 
         logger.info(s"Document Symbols request for ${tdi.uri}")
-        val future = ensimeActor ? StructureViewReq(toSourceFileInfo(tdi.uri, Some(new String(doc.contents))))
+        val future = ensimeActor ? StructureViewReq(toSourceFileInfo(getPathFrom(tdi), Some(new String(doc.contents))))
 
         future.onComplete { f => logger.debug(s"StructureView future completed: succes? ${f.isSuccess}") }
         future.map {
@@ -325,10 +375,8 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream) extends LanguageS
   )
 
 
-  private def toSourceFileInfo(uri: String, contents: Option[String] = None): SourceFileInfo = {
-    val f = new File(new URI(uri))
-    SourceFileInfo(RawFile(f.toPath), contents)
-  }
+  private def toSourceFileInfo(path: Path, contents: Option[String] = None): SourceFileInfo =
+    SourceFileInfo(RawFile(path), contents)
 
   private def toCompletion(completionInfo: CompletionInfo) = {
     def symKind: Option[Int] = completionInfo.typeInfo map { info =>
