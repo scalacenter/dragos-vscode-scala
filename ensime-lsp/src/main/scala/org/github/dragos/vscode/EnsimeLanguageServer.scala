@@ -203,6 +203,8 @@ class EnsimeLanguageServer(in: InputStream, out: OutputStream, cwd: Path) extend
     } else {
       val filepath = f.toPath
       pendingDbNotesFor += filepath
+      publishDiagnostics(Nil)
+      pendingDbNotesFor += filepath
       ensimeActor ! TypecheckFileReq(SourceFileInfo(RawFile(filepath), Some(td.text)))
     }
   }
